@@ -2,7 +2,7 @@ import sys
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QSlider, QFrame, QColorDialog, QScrollArea, QLineEdit, QCheckBox, QTextEdit, QDialog, QVBoxLayout as QVLayout, QDialogButtonBox
+    QFileDialog, QSlider, QFrame, QColorDialog, QScrollArea, QLineEdit, QCheckBox, QTextEdit, QDialog, QVBoxLayout as QVLayout, QDialogButtonBox, QHBoxLayout as QHLayout
 )
 from PyQt5.QtGui import QPixmap, QImage, QColor
 from PyQt5.QtCore import Qt
@@ -28,6 +28,8 @@ class SuperpixelAnnotator(QMainWindow):
         self._fixed_pixmap_size = None  # pro fixní velikost obrázku
         self.last_image_path = None
         self.segmentations = []  # seznam segmentací v paměti
+        self.label_buttons_widget = None
+        self.label_buttons_layout = None
         self.init_ui()
 
     def init_ui(self):
@@ -70,6 +72,12 @@ class SuperpixelAnnotator(QMainWindow):
         self.label_edit.setPlaceholderText('Label pro vybrané oblasti')
         self.label_edit.textChanged.connect(self.set_label)
 
+        # Dynamická tlačítka labelů
+        self.label_buttons_widget = QWidget()
+        self.label_buttons_layout = QHLayout()
+        self.label_buttons_widget.setLayout(self.label_buttons_layout)
+        self.update_label_buttons()
+
         # Panel pro ruční hranice
         self.border_panel = QWidget()
         self.border_layout = QVBoxLayout()
@@ -83,7 +91,7 @@ class SuperpixelAnnotator(QMainWindow):
 
         # Tlačítka pro COCO JSON
         self.save_json_btn = QPushButton('Přidat segmentaci')
-        self.save_json_btn.clicked.connect(self.save_coco_json)
+        self.save_json_btn.clicked.connect(lambda: self.save_coco_json())
         self.show_json_btn = QPushButton('Zobrazit JSON')
         self.show_json_btn.clicked.connect(self.show_coco_json)
         self.export_all_btn = QPushButton('Exportovat vše do COCO JSON')
@@ -110,6 +118,7 @@ class SuperpixelAnnotator(QMainWindow):
         slider_layout.addWidget(self.color_btn)
         slider_layout.addWidget(self.manual_checkbox)
         slider_layout.addWidget(self.label_edit)
+        slider_layout.addWidget(self.label_buttons_widget)
         slider_layout.addWidget(self.save_json_btn)
         slider_layout.addWidget(self.new_label_btn)
         slider_layout.addWidget(self.show_json_btn)
@@ -356,19 +365,77 @@ class SuperpixelAnnotator(QMainWindow):
         self.display_image()
         super().resizeEvent(event)
 
-    def save_coco_json(self):
+    def update_label_buttons(self):
+        # Smaž stará tlačítka
+        while self.label_buttons_layout.count():
+            child = self.label_buttons_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        # Najdi unikátní labely
+        labels = list({ann['label'] for ann in self.segmentations})
+        labels.sort()
+        for label in labels:
+            btn = QPushButton(label)
+            btn.clicked.connect(lambda _, l=label: self.save_coco_json_with_label(l))
+            self.label_buttons_layout.addWidget(btn)
+        self.label_buttons_layout.addStretch(1)
+
+    def save_coco_json_with_label(self, label):
         if not self.selected_components or self.image is None:
             return
-        coco_ann = self.create_coco_annotation()
+        # Uloží segmentaci s tímto labelem, pole neřeší
+        self.current_label = label
+        coco_ann = self.create_coco_annotation(label_override=label)
         self.segmentations.append(coco_ann)
         self.update_seg_panel()
+        self.update_label_buttons()
         self.new_label()  # automaticky připrav nový label
 
-    def new_label(self):
-        self.selected_components = set()
-        self.current_label = ''
-        self.label_edit.setText('')
-        self.display_image()
+    def save_coco_json(self):
+        from PyQt5.QtWidgets import QMessageBox
+        label = self.label_edit.text().strip()
+        print(f"DEBUG: label='{label}', selected_components={self.selected_components}")
+        if not label:
+            QMessageBox.warning(self, 'Chyba', 'Zadejte název labelu!')
+            return
+        if not self.selected_components or self.image is None:
+            QMessageBox.warning(self, 'Chyba', 'Vyberte alespoň jednu oblast!')
+            return
+        self.current_label = label
+        coco_ann = self.create_coco_annotation(label_override=label)
+        self.segmentations.append(coco_ann)
+        self.update_seg_panel()
+        self.update_label_buttons()
+        self.new_label()  # automaticky připrav nový label
+
+    def create_coco_annotation(self, label_override=None):
+        h, w = self.image.shape[:2]
+        annotation_id = len(self.segmentations) + 1
+        category_id = 1
+        mask = np.zeros((h, w), dtype=np.uint8)
+        for comp in self.selected_components:
+            mask = mask | (self.component_labels == comp)
+        from skimage import measure
+        segmentation = []
+        contours = measure.find_contours(mask, 0.5)
+        for contour in contours:
+            poly = []
+            for y, x in contour:
+                poly.extend([float(x), float(y)])
+            if len(poly) >= 6:
+                segmentation.append(poly)
+        area = float(np.sum(mask))
+        bbox = self.mask_to_bbox(mask)
+        label = label_override if label_override is not None else (self.current_label if self.current_label else f'object_{annotation_id}')
+        return {
+            "id": annotation_id,
+            "category_id": category_id,
+            "segmentation": segmentation,
+            "area": area,
+            "bbox": bbox,
+            "iscrowd": 0,
+            "label": label
+        }
 
     def show_coco_json(self):
         if not self.segmentations:
@@ -396,35 +463,6 @@ class SuperpixelAnnotator(QMainWindow):
         if file_name:
             with open(file_name, 'w', encoding='utf-8') as f:
                 json.dump(coco, f, ensure_ascii=False, indent=2)
-
-    def create_coco_annotation(self):
-        h, w = self.image.shape[:2]
-        annotation_id = len(self.segmentations) + 1
-        category_id = 1
-        mask = np.zeros((h, w), dtype=np.uint8)
-        for comp in self.selected_components:
-            mask = mask | (self.component_labels == comp)
-        from skimage import measure
-        segmentation = []
-        contours = measure.find_contours(mask, 0.5)
-        for contour in contours:
-            poly = []
-            for y, x in contour:
-                poly.extend([float(x), float(y)])
-            if len(poly) >= 6:
-                segmentation.append(poly)
-        area = float(np.sum(mask))
-        bbox = self.mask_to_bbox(mask)
-        label = self.current_label if self.current_label else f'object_{annotation_id}'
-        return {
-            "id": annotation_id,
-            "category_id": category_id,
-            "segmentation": segmentation,
-            "area": area,
-            "bbox": bbox,
-            "iscrowd": 0,
-            "label": label
-        }
 
     def create_coco_json_all(self):
         h, w = self.image.shape[:2]
@@ -472,6 +510,7 @@ class SuperpixelAnnotator(QMainWindow):
         if 0 <= idx < len(self.segmentations):
             self.segmentations.pop(idx)
             self.update_seg_panel()
+            self.update_label_buttons()
 
     def mask_to_bbox(self, mask):
         ys, xs = np.where(mask)
@@ -480,6 +519,12 @@ class SuperpixelAnnotator(QMainWindow):
         x_min, x_max = xs.min(), xs.max()
         y_min, y_max = ys.min(), ys.max()
         return [int(x_min), int(y_min), int(x_max - x_min), int(y_max - y_min)]
+
+    def new_label(self):
+        self.selected_components = set()
+        self.current_label = ''
+        self.label_edit.setText('')
+        self.display_image()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
