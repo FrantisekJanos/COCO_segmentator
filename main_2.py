@@ -19,9 +19,12 @@ class SuperpixelAnnotator(QMainWindow):
         self.manual_borders = []  # seznam ručně dokreslených hranic (každá je seznam bodů)
         self.current_border = []
         self.component_labels = None  # maska komponent
-        self.selected_component = None  # index vybrané komponenty
+        self.selected_components = set()  # multi-select
         self.highlight_color = QColor(0, 255, 0, 120)
         self.manual_mode = False
+        self.label_edit = None
+        self.current_label = ''
+        self._fixed_pixmap_size = None  # pro fixní velikost obrázku
         self.init_ui()
 
     def init_ui(self):
@@ -56,8 +59,13 @@ class SuperpixelAnnotator(QMainWindow):
         self.color_btn.clicked.connect(self.choose_color)
 
         # Režim ručního kreslení
-        self.manual_checkbox = QCheckBox('Ruční dělení oblasti čárou')
+        self.manual_checkbox = QCheckBox('Ruční dělení oblasti čárou (nebo klávesa C)')
         self.manual_checkbox.stateChanged.connect(self.toggle_manual_mode)
+
+        # Label pro vybrané oblasti
+        self.label_edit = QLineEdit()
+        self.label_edit.setPlaceholderText('Label pro vybrané oblasti')
+        self.label_edit.textChanged.connect(self.set_label)
 
         # Panel pro ruční hranice
         self.border_panel = QWidget()
@@ -77,6 +85,7 @@ class SuperpixelAnnotator(QMainWindow):
         slider_layout.addWidget(load_btn)
         slider_layout.addWidget(self.color_btn)
         slider_layout.addWidget(self.manual_checkbox)
+        slider_layout.addWidget(self.label_edit)
 
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
@@ -99,6 +108,9 @@ class SuperpixelAnnotator(QMainWindow):
         self.current_border = []
         self.display_image()
 
+    def set_label(self, text):
+        self.current_label = text
+
     def load_image(self):
         file_name, _ = QFileDialog.getOpenFileName(self, 'Vyberte obrázek', '', 'Obrázky (*.png *.jpg *.jpeg *.bmp)')
         if file_name:
@@ -107,7 +119,9 @@ class SuperpixelAnnotator(QMainWindow):
                 self.image = color.gray2rgb(self.image)
             self.manual_borders = []
             self.current_border = []
-            self.selected_component = None
+            self.selected_components = set()
+            self.current_label = ''
+            self.label_edit.setText('')
             self.update_superpixels()
 
     def update_superpixels(self):
@@ -116,10 +130,11 @@ class SuperpixelAnnotator(QMainWindow):
         n_segments = self.slic_slider.value()
         self.slic_label.setText(f'Počet oblastí: {n_segments}')
         segments = segmentation.slic(self.image, n_segments=n_segments, compactness=10, start_label=1)
-        # Vytvoř binární masku hranic superpixelů
         edges = segmentation.find_boundaries(segments, mode='thick')
         self.superpixel_edges = edges
-        self.selected_component = None
+        self.selected_components = set()
+        self.current_label = ''
+        self.label_edit.setText('')
         self.recompute_components()
         self.display_image()
         self.update_border_panel()
@@ -127,14 +142,15 @@ class SuperpixelAnnotator(QMainWindow):
     def recompute_components(self):
         if self.image is None:
             return
-        # Kombinace hranic superpixelů a ručních čar
         border_mask = self.superpixel_edges.copy()
         for path in self.manual_borders:
             if len(path) > 1:
                 for i in range(len(path) - 1):
-                    rr, cc = draw.line(path[i][1], path[i][0], path[i+1][1], path[i+1][0])
-                    border_mask[rr, cc] = True
-        # Invertuj hranice, aby oblasti byly True
+                    # Tlustá čára (2px): vykresli okolní pixely
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            rr, cc = draw.line(path[i][1]+dy, path[i][0]+dx, path[i+1][1]+dy, path[i+1][0]+dx)
+                            border_mask[rr, cc] = True
         area_mask = ~border_mask
         labels, _ = ndi_label(area_mask)
         self.component_labels = labels
@@ -143,27 +159,44 @@ class SuperpixelAnnotator(QMainWindow):
         if self.image is None or self.component_labels is None:
             return
         overlay = self.image.copy()
-        # Zvýrazni vybranou komponentu
-        if self.selected_component is not None and self.selected_component > 0:
-            mask = (self.component_labels == self.selected_component)
-            overlay = self.apply_overlay(overlay, mask, self.highlight_color)
-        # Překresli hranice superpixelů (červeně)
+        # Zvýrazni všechny vybrané komponenty
+        for comp in self.selected_components:
+            if comp > 0:
+                mask = (self.component_labels == comp)
+                overlay = self.apply_overlay(overlay, mask, self.highlight_color)
+        # Překresli hranice superpixelů (červeně, tloušťka 2)
         edge_mask = self.superpixel_edges if self.superpixel_edges is not None else np.zeros(self.image.shape[:2], dtype=bool)
-        overlay[edge_mask] = [255, 0, 0]
-        # Překresli ruční hranice (modře)
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                shifted = np.roll(edge_mask, shift=(dy, dx), axis=(0, 1))
+                overlay[shifted] = [255, 0, 0]
+        # Překresli ruční hranice (červeně, tloušťka 2)
         for path in self.manual_borders:
             if len(path) > 1:
                 for i in range(len(path) - 1):
-                    rr, cc = draw.line(path[i][1], path[i][0], path[i+1][1], path[i+1][0])
-                    overlay[rr, cc] = [0, 0, 255]
-        # Převod na QImage
+                    for dx in [-1, 0, 1]:
+                        for dy in [-1, 0, 1]:
+                            rr, cc = draw.line(path[i][1]+dy, path[i][0]+dx, path[i+1][1]+dy, path[i+1][0]+dx)
+                            overlay[rr, cc] = [255, 0, 0]
+        # Pokud právě kreslíme, vykresli aktuální čáru
+        if self.manual_mode and len(self.current_border) > 1:
+            for i in range(len(self.current_border) - 1):
+                for dx in [-1, 0, 1]:
+                    for dy in [-1, 0, 1]:
+                        rr, cc = draw.line(
+                            self.current_border[i][1]+dy, self.current_border[i][0]+dx,
+                            self.current_border[i+1][1]+dy, self.current_border[i+1][0]+dx)
+                        overlay[rr, cc] = [255, 0, 0]
         if overlay.dtype != np.uint8:
             overlay = (255 * (overlay / overlay.max())).astype(np.uint8)
         h, w, ch = overlay.shape
         qimg = QImage(overlay.data, w, h, ch * w, QImage.Format_RGB888)
         pixmap = QPixmap.fromImage(qimg)
-        self.image_label.setPixmap(pixmap.scaled(
-            self.image_label.width(), self.image_label.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        # Oprava zvětšování: použij fixní velikost pixmapy
+        if self._fixed_pixmap_size is None:
+            self._fixed_pixmap_size = self.image_label.size()
+        pixmap = pixmap.scaled(self._fixed_pixmap_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.image_label.setPixmap(pixmap)
 
     def apply_overlay(self, img, mask, color):
         img = img.copy()
@@ -171,34 +204,6 @@ class SuperpixelAnnotator(QMainWindow):
         rgb = np.array([color.red(), color.green(), color.blue()])
         img[mask] = (1 - alpha) * img[mask] + alpha * rgb
         return img
-
-    def image_mouse_move(self, event):
-        if self.manual_mode and event.buttons() & Qt.LeftButton:
-            pos = event.pos()
-            label_w = self.image_label.width()
-            label_h = self.image_label.height()
-            pixmap = self.image_label.pixmap()
-            if pixmap is None:
-                return
-            pm_w = pixmap.width()
-            pm_h = pixmap.height()
-            x = pos.x() - (label_w - pm_w) // 2
-            y = pos.y() - (label_h - pm_h) // 2
-            img_h, img_w = self.image.shape[:2]
-            scale = min(label_w / img_w, label_h / img_h)
-            orig_x = int(x / scale)
-            orig_y = int(y / scale)
-            if 0 <= orig_x < img_w and 0 <= orig_y < img_h:
-                self.current_border.append((orig_x, orig_y))
-                self.display_image()
-
-    def image_mouse_release(self, event):
-        if self.manual_mode and event.button() == Qt.LeftButton and len(self.current_border) > 1:
-            self.manual_borders.append(self.current_border[:])
-            self.current_border = []
-            self.recompute_components()
-            self.display_image()
-            self.update_border_panel()
 
     def image_clicked(self, event):
         if self.manual_mode:
@@ -208,6 +213,7 @@ class SuperpixelAnnotator(QMainWindow):
                 label_h = self.image_label.height()
                 pixmap = self.image_label.pixmap()
                 if pixmap is None:
+                    event.accept()
                     return
                 pm_w = pixmap.width()
                 pm_h = pixmap.height()
@@ -220,8 +226,9 @@ class SuperpixelAnnotator(QMainWindow):
                 if 0 <= orig_x < img_w and 0 <= orig_y < img_h:
                     self.current_border.append((orig_x, orig_y))
                     self.display_image()
+            event.accept()
             return
-        # Výběr komponenty podle aktuální masky
+        # Multi-select komponent
         if self.image is None or self.component_labels is None:
             return
         label_w = self.image_label.width()
@@ -244,11 +251,43 @@ class SuperpixelAnnotator(QMainWindow):
         comp = self.component_labels[orig_y, orig_x]
         if comp == 0:
             return
-        if self.selected_component == comp:
-            self.selected_component = None
+        if comp in self.selected_components:
+            self.selected_components.remove(comp)
         else:
-            self.selected_component = comp
+            self.selected_components.add(comp)
         self.display_image()
+        event.accept()
+
+    def image_mouse_move(self, event):
+        if self.manual_mode and event.buttons() & Qt.LeftButton:
+            pos = event.pos()
+            label_w = self.image_label.width()
+            label_h = self.image_label.height()
+            pixmap = self.image_label.pixmap()
+            if pixmap is None:
+                event.accept()
+                return
+            pm_w = pixmap.width()
+            pm_h = pixmap.height()
+            x = pos.x() - (label_w - pm_w) // 2
+            y = pos.y() - (label_h - pm_h) // 2
+            img_h, img_w = self.image.shape[:2]
+            scale = min(label_w / img_w, label_h / img_h)
+            orig_x = int(x / scale)
+            orig_y = int(y / scale)
+            if 0 <= orig_x < img_w and 0 <= orig_y < img_h:
+                self.current_border.append((orig_x, orig_y))
+                self.display_image()
+            event.accept()
+
+    def image_mouse_release(self, event):
+        if self.manual_mode and event.button() == Qt.LeftButton and len(self.current_border) > 1:
+            self.manual_borders.append(self.current_border[:])
+            self.current_border = []
+            self.recompute_components()
+            self.display_image()
+            self.update_border_panel()
+            event.accept()
 
     def update_border_panel(self):
         while self.border_layout.count():
@@ -273,6 +312,19 @@ class SuperpixelAnnotator(QMainWindow):
             self.recompute_components()
             self.display_image()
             self.update_border_panel()
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_C:
+            self.manual_checkbox.setChecked(not self.manual_checkbox.isChecked())
+            event.accept()
+        else:
+            super().keyPressEvent(event)
+
+    def resizeEvent(self, event):
+        # Při změně velikosti okna aktualizuj fixní velikost pixmapy
+        self._fixed_pixmap_size = self.image_label.size()
+        self.display_image()
+        super().resizeEvent(event)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
