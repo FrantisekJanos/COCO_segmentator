@@ -2,17 +2,18 @@ import sys
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QSlider, QFrame, QColorDialog, QScrollArea, QLineEdit, QCheckBox
+    QFileDialog, QSlider, QFrame, QColorDialog, QScrollArea, QLineEdit, QCheckBox, QTextEdit, QDialog, QVBoxLayout as QVLayout, QDialogButtonBox
 )
 from PyQt5.QtGui import QPixmap, QImage, QColor
 from PyQt5.QtCore import Qt
 from skimage import io, color, segmentation, img_as_ubyte, draw
 from scipy.ndimage import label as ndi_label
+import json
 
 class SuperpixelAnnotator(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Superpixel Segmentační anotátor (PyQt5)')
+        self.setWindowTitle('Superpixel Segmentační fakin-annotátor (PyQt5)')
         self.setGeometry(100, 100, 1200, 800)
         self.image = None
         self.superpixel_edges = None
@@ -25,6 +26,8 @@ class SuperpixelAnnotator(QMainWindow):
         self.label_edit = None
         self.current_label = ''
         self._fixed_pixmap_size = None  # pro fixní velikost obrázku
+        self.last_image_path = None
+        self.segmentations = []  # seznam segmentací v paměti
         self.init_ui()
 
     def init_ui(self):
@@ -78,6 +81,27 @@ class SuperpixelAnnotator(QMainWindow):
         self.border_scroll.setMaximumWidth(250)
         self.border_scroll.setWindowTitle('Ruční hranice')
 
+        # Tlačítka pro COCO JSON
+        self.save_json_btn = QPushButton('Přidat segmentaci')
+        self.save_json_btn.clicked.connect(self.save_coco_json)
+        self.show_json_btn = QPushButton('Zobrazit JSON')
+        self.show_json_btn.clicked.connect(self.show_coco_json)
+        self.export_all_btn = QPushButton('Exportovat vše do COCO JSON')
+        self.export_all_btn.clicked.connect(self.export_all_coco_json)
+        self.new_label_btn = QPushButton('Nový label')
+        self.new_label_btn.clicked.connect(self.new_label)
+
+        # Panel pro správu segmentací
+        self.seg_panel = QWidget()
+        self.seg_layout = QVBoxLayout()
+        self.seg_panel.setLayout(self.seg_layout)
+        self.seg_scroll = QScrollArea()
+        self.seg_scroll.setWidgetResizable(True)
+        self.seg_scroll.setWidget(self.seg_panel)
+        self.seg_scroll.setMinimumWidth(220)
+        self.seg_scroll.setMaximumWidth(350)
+        self.seg_scroll.setWindowTitle('Segmentace')
+
         # Layouts
         slider_layout = QVBoxLayout()
         slider_layout.addWidget(self.slic_label)
@@ -86,6 +110,10 @@ class SuperpixelAnnotator(QMainWindow):
         slider_layout.addWidget(self.color_btn)
         slider_layout.addWidget(self.manual_checkbox)
         slider_layout.addWidget(self.label_edit)
+        slider_layout.addWidget(self.save_json_btn)
+        slider_layout.addWidget(self.new_label_btn)
+        slider_layout.addWidget(self.show_json_btn)
+        slider_layout.addWidget(self.export_all_btn)
 
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
@@ -93,6 +121,7 @@ class SuperpixelAnnotator(QMainWindow):
         left_layout.addWidget(self.image_label)
         main_layout.addLayout(left_layout)
         main_layout.addWidget(self.border_scroll)
+        main_layout.addWidget(self.seg_scroll)
 
         main_widget.setLayout(main_layout)
 
@@ -115,6 +144,7 @@ class SuperpixelAnnotator(QMainWindow):
         file_name, _ = QFileDialog.getOpenFileName(self, 'Vyberte obrázek', '', 'Obrázky (*.png *.jpg *.jpeg *.bmp)')
         if file_name:
             self.image = io.imread(file_name)
+            self.last_image_path = file_name
             if self.image.ndim == 2:
                 self.image = color.gray2rgb(self.image)
             self.manual_borders = []
@@ -325,6 +355,131 @@ class SuperpixelAnnotator(QMainWindow):
         self._fixed_pixmap_size = self.image_label.size()
         self.display_image()
         super().resizeEvent(event)
+
+    def save_coco_json(self):
+        if not self.selected_components or self.image is None:
+            return
+        coco_ann = self.create_coco_annotation()
+        self.segmentations.append(coco_ann)
+        self.update_seg_panel()
+        self.new_label()  # automaticky připrav nový label
+
+    def new_label(self):
+        self.selected_components = set()
+        self.current_label = ''
+        self.label_edit.setText('')
+        self.display_image()
+
+    def show_coco_json(self):
+        if not self.segmentations:
+            return
+        coco = self.create_coco_json_all()
+        dlg = QDialog(self)
+        dlg.setWindowTitle('COCO JSON')
+        layout = QVLayout()
+        text = QTextEdit()
+        text.setReadOnly(True)
+        text.setText(json.dumps(coco, ensure_ascii=False, indent=2))
+        layout.addWidget(text)
+        btns = QDialogButtonBox(QDialogButtonBox.Ok)
+        btns.accepted.connect(dlg.accept)
+        layout.addWidget(btns)
+        dlg.setLayout(layout)
+        dlg.resize(700, 600)
+        dlg.exec_()
+
+    def export_all_coco_json(self):
+        if not self.segmentations:
+            return
+        coco = self.create_coco_json_all()
+        file_name, _ = QFileDialog.getSaveFileName(self, 'Exportovat vše do COCO JSON', 'segmentace.json', 'JSON (*.json)')
+        if file_name:
+            with open(file_name, 'w', encoding='utf-8') as f:
+                json.dump(coco, f, ensure_ascii=False, indent=2)
+
+    def create_coco_annotation(self):
+        h, w = self.image.shape[:2]
+        annotation_id = len(self.segmentations) + 1
+        category_id = 1
+        mask = np.zeros((h, w), dtype=np.uint8)
+        for comp in self.selected_components:
+            mask = mask | (self.component_labels == comp)
+        from skimage import measure
+        segmentation = []
+        contours = measure.find_contours(mask, 0.5)
+        for contour in contours:
+            poly = []
+            for y, x in contour:
+                poly.extend([float(x), float(y)])
+            if len(poly) >= 6:
+                segmentation.append(poly)
+        area = float(np.sum(mask))
+        bbox = self.mask_to_bbox(mask)
+        label = self.current_label if self.current_label else f'object_{annotation_id}'
+        return {
+            "id": annotation_id,
+            "category_id": category_id,
+            "segmentation": segmentation,
+            "area": area,
+            "bbox": bbox,
+            "iscrowd": 0,
+            "label": label
+        }
+
+    def create_coco_json_all(self):
+        h, w = self.image.shape[:2]
+        file_name = self.last_image_path.split('/')[-1] if self.last_image_path else 'image.png'
+        images = [{
+            "id": 1,
+            "file_name": file_name,
+            "width": w,
+            "height": h
+        }]
+        annotations = []
+        categories = []
+        cat_map = {}
+        for ann in self.segmentations:
+            annotations.append({k: v for k, v in ann.items() if k != 'label'})
+            if ann['label'] not in cat_map:
+                cat_id = len(cat_map) + 1
+                cat_map[ann['label']] = cat_id
+                categories.append({"id": cat_id, "name": ann['label']})
+            annotations[-1]['category_id'] = cat_map[ann['label']]
+        return {
+            "images": images,
+            "annotations": annotations,
+            "categories": categories
+        }
+
+    def update_seg_panel(self):
+        while self.seg_layout.count():
+            child = self.seg_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        for i, ann in enumerate(self.segmentations):
+            label = QLabel(f"{ann['label']} (oblastí: {len(ann['segmentation'])})")
+            remove_btn = QPushButton('Smazat')
+            remove_btn.clicked.connect(lambda _, idx=i: self.remove_segmentation(idx))
+            row = QHBoxLayout()
+            row.addWidget(label)
+            row.addWidget(remove_btn)
+            row_widget = QWidget()
+            row_widget.setLayout(row)
+            self.seg_layout.addWidget(row_widget)
+        self.seg_layout.addStretch(1)
+
+    def remove_segmentation(self, idx):
+        if 0 <= idx < len(self.segmentations):
+            self.segmentations.pop(idx)
+            self.update_seg_panel()
+
+    def mask_to_bbox(self, mask):
+        ys, xs = np.where(mask)
+        if len(xs) == 0 or len(ys) == 0:
+            return [0, 0, 0, 0]
+        x_min, x_max = xs.min(), xs.max()
+        y_min, y_max = ys.min(), ys.max()
+        return [int(x_min), int(y_min), int(x_max - x_min), int(y_max - y_min)]
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
