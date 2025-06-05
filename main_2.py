@@ -9,6 +9,8 @@ from PyQt5.QtCore import Qt
 from skimage import io, color, segmentation, img_as_ubyte, draw
 from scipy.ndimage import label as ndi_label
 import json
+from segmentation_storage import SegmentationStorage, SegmentationEntry
+from visualization_window import VisualizationWindow
 
 class SuperpixelAnnotator(QMainWindow):
     def __init__(self):
@@ -30,6 +32,7 @@ class SuperpixelAnnotator(QMainWindow):
         self.segmentations = []  # seznam segmentací v paměti
         self.label_buttons_widget = None
         self.label_buttons_layout = None
+        self.seg_storage = SegmentationStorage()
         self.init_ui()
 
     def init_ui(self):
@@ -109,6 +112,8 @@ class SuperpixelAnnotator(QMainWindow):
         self.export_all_btn.clicked.connect(self.export_all_coco_json)
         self.new_label_btn = QPushButton('Nový label')
         self.new_label_btn.clicked.connect(self.new_label)
+        self.visualize_btn = QPushButton('Vizualizace segmentací')
+        self.visualize_btn.clicked.connect(self.open_visualization)
 
         # Panel pro správu segmentací
         self.seg_panel = QWidget()
@@ -133,6 +138,7 @@ class SuperpixelAnnotator(QMainWindow):
         slider_layout.addWidget(self.new_label_btn)
         slider_layout.addWidget(self.show_json_btn)
         slider_layout.addWidget(self.export_all_btn)
+        slider_layout.addWidget(self.visualize_btn)
 
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
@@ -393,18 +399,18 @@ class SuperpixelAnnotator(QMainWindow):
     def save_coco_json_with_label(self, label):
         if not self.selected_components or self.image is None:
             return
-        # Uloží segmentaci s tímto labelem, pole neřeší
         self.current_label = label
         coco_ann = self.create_coco_annotation(label_override=label)
         self.segmentations.append(coco_ann)
         self.update_seg_panel()
         self.update_label_buttons()
         self.new_label()  # automaticky připrav nový label
+        # --- Uložit do storage ---
+        self.save_to_storage(coco_ann)
 
     def save_coco_json(self):
         from PyQt5.QtWidgets import QMessageBox
         label = self.label_edit.text().strip()
-        print(f"DEBUG: label='{label}', selected_components={self.selected_components}")
         if not label:
             QMessageBox.warning(self, 'Chyba', 'Zadejte název labelu!')
             return
@@ -417,6 +423,8 @@ class SuperpixelAnnotator(QMainWindow):
         self.update_seg_panel()
         self.update_label_buttons()
         self.new_label()  # automaticky připrav nový label
+        # --- Uložit do storage ---
+        self.save_to_storage(coco_ann)
 
     def create_coco_annotation(self, label_override=None):
         h, w = self.image.shape[:2]
@@ -535,6 +543,39 @@ class SuperpixelAnnotator(QMainWindow):
         self.current_label = ''
         self.label_edit.setText('')
         self.display_image()
+
+    def save_to_storage(self, coco_ann):
+        # Převede COCO anotaci na SegmentationEntry a uloží do storage
+        if self.last_image_path is None:
+            return
+        # Vytvořit masku z polygonů (pouze pro ukázku, v praxi by bylo lepší masku ukládat přímo)
+        h, w = self.image.shape[:2]
+        mask = np.zeros((h, w), dtype=np.uint8)
+        from skimage.draw import polygon as skpolygon
+        for seg in coco_ann['segmentation']:
+            if len(seg) >= 6:
+                xs = seg[0::2]
+                ys = seg[1::2]
+                rr, cc = skpolygon(ys, xs, shape=mask.shape)
+                mask[rr, cc] = 1
+        entry = SegmentationEntry(
+            image_path=self.last_image_path,
+            label=coco_ann['label'],
+            mask=mask,
+            polygon=None,
+            color=None
+        )
+        self.seg_storage.add_segmentation(entry)
+
+    def open_visualization(self):
+        # Otevře okno vizualizace segmentací
+        segs = self.seg_storage.get_all_segmentations()
+        if not segs:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.information(self, 'Vizualizace', 'Nejsou k dispozici žádné segmentace.')
+            return
+        self.vis_window = VisualizationWindow(segs)
+        self.vis_window.show()
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
