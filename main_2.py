@@ -2,7 +2,7 @@ import sys
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
-    QFileDialog, QSlider, QFrame, QColorDialog, QScrollArea, QLineEdit, QCheckBox, QTextEdit, QDialog, QVBoxLayout as QVLayout, QDialogButtonBox, QHBoxLayout as QHLayout
+    QFileDialog, QSlider, QFrame, QColorDialog, QScrollArea, QLineEdit, QCheckBox, QTextEdit, QDialog, QVBoxLayout as QVLayout, QDialogButtonBox, QHBoxLayout as QHLayout, QSpinBox
 )
 from PyQt5.QtGui import QPixmap, QImage, QColor
 from PyQt5.QtCore import Qt
@@ -57,6 +57,17 @@ class SuperpixelAnnotator(QMainWindow):
         self.slic_slider.setTickInterval(10)
         self.slic_slider.valueChanged.connect(self.update_superpixels)
         self.slic_label = QLabel(f'Počet oblastí: 100')
+        # Spinbox pro počet superpixelů
+        self.slic_spin = QSpinBox()
+        self.slic_spin.setMinimum(20)
+        self.slic_spin.setMaximum(500)
+        self.slic_spin.setValue(100)
+        self.slic_spin.valueChanged.connect(self.slic_slider.setValue)
+        self.slic_slider.valueChanged.connect(self.slic_spin.setValue)
+        slic_layout = QHBoxLayout()
+        slic_layout.addWidget(self.slic_label)
+        slic_layout.addWidget(self.slic_slider)
+        slic_layout.addWidget(self.slic_spin)
 
         # Barva zvýraznění
         self.color_btn = QPushButton('Barva zvýraznění')
@@ -112,8 +123,7 @@ class SuperpixelAnnotator(QMainWindow):
 
         # Layouts
         slider_layout = QVBoxLayout()
-        slider_layout.addWidget(self.slic_label)
-        slider_layout.addWidget(self.slic_slider)
+        slider_layout.addLayout(slic_layout)
         slider_layout.addWidget(load_btn)
         slider_layout.addWidget(self.color_btn)
         slider_layout.addWidget(self.manual_checkbox)
