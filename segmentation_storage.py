@@ -4,6 +4,7 @@ import numpy as np
 
 @dataclass
 class SegmentationEntry:
+    id: int  # unikátní id segmentace
     image_path: str
     label: str
     mask: np.ndarray = None  # 2D bool/uint8 mask
@@ -21,12 +22,13 @@ class SegmentationStorage:
             self.segmentations_by_image[entry.image_path] = []
         self.segmentations_by_image[entry.image_path].append(entry)
 
-    def remove_segmentation(self, image_path: str, idx: int):
+    def remove_segmentation_by_id(self, image_path: str, seg_id: int):
         if image_path in self.segmentations_by_image:
-            if 0 <= idx < len(self.segmentations_by_image[image_path]):
-                del self.segmentations_by_image[image_path][idx]
-                if not self.segmentations_by_image[image_path]:
-                    del self.segmentations_by_image[image_path]
+            segs = self.segmentations_by_image[image_path]
+            self.segmentations_by_image[image_path] = [s for s in segs if s.id != seg_id]
+            # NEmaž klíč, i když je seznam prázdný!
+            # if not self.segmentations_by_image[image_path]:
+            #     del self.segmentations_by_image[image_path]
 
     def get_segmentations(self, image_path: str) -> List[SegmentationEntry]:
         return self.segmentations_by_image.get(image_path, [])

@@ -1,6 +1,7 @@
 import numpy as np
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QColor, QPen, QBrush
 from PyQt5.QtCore import QRect, QPoint
+from skimage import measure
 
 
 def np_to_qimage(np_img):
@@ -33,7 +34,7 @@ def draw_segmentation_overlay(
 ) -> QPixmap:
     """
     Vykreslí overlay segmentací na obrázek.
-    segmentations: list of dicts, každý má 'mask' (2D bool/uint8), 'label', 'color' (QColor or tuple), optional 'polygon'
+    segmentations: list of dicts, každý má 'mask' (2D bool/uint8), 'label', 'color' (QColor or tuple), optional 'polygon', optional 'outline_width'
     """
     qimage = np_to_qimage(base_image)
     pixmap = QPixmap.fromImage(qimage)
@@ -45,6 +46,7 @@ def draw_segmentation_overlay(
         for idx, seg in enumerate(segmentations):
             mask = seg.get('mask')  # 2D numpy array
             color = seg.get('color')
+            outline_width = seg.get('outline_width', 4)
             if color is None and color_map:
                 color = color_map(idx)
             if color is None:
@@ -60,10 +62,10 @@ def draw_segmentation_overlay(
                 overlay[mask > 0] = [color.red(), color.green(), color.blue(), int(255 * alpha)]
                 overlay_img = np_to_qimage(overlay)
                 painter.drawImage(0, 0, overlay_img)
-            # Draw polygon if present
+            # Draw polygon/outline if present
             polygon = seg.get('polygon')
             if polygon is not None and len(polygon) > 1:
-                pen = QPen(color, 2)
+                pen = QPen(color, outline_width)
                 painter.setPen(pen)
                 points = [QPoint(int(x), int(y)) for x, y in polygon]
                 for i in range(len(points) - 1):
@@ -71,6 +73,15 @@ def draw_segmentation_overlay(
                 # Optionally close polygon
                 if np.allclose(polygon[0], polygon[-1]):
                     painter.drawLine(points[-1], points[0])
+            # Pokud není polygon, vykresli outline přes kontury masky
+            elif mask is not None:
+                contours = measure.find_contours(mask, 0.5)
+                pen = QPen(color, outline_width)
+                painter.setPen(pen)
+                for contour in contours:
+                    points = [QPoint(int(x), int(y)) for y, x in contour]
+                    for i in range(len(points) - 1):
+                        painter.drawLine(points[i], points[i + 1])
             # Draw label
             if draw_labels and 'label' in seg:
                 label = seg['label']

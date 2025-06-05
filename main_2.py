@@ -33,6 +33,7 @@ class SuperpixelAnnotator(QMainWindow):
         self.label_buttons_widget = None
         self.label_buttons_layout = None
         self.seg_storage = SegmentationStorage()
+        self.vis_window = None
         self.init_ui()
 
     def init_ui(self):
@@ -508,14 +509,19 @@ class SuperpixelAnnotator(QMainWindow):
         }
 
     def update_seg_panel(self):
+        # Vyčistí panel
         while self.seg_layout.count():
             child = self.seg_layout.takeAt(0)
             if child.widget():
                 child.widget().deleteLater()
-        for i, ann in enumerate(self.segmentations):
+        # Kontrola, zda jsou segmentace platné
+        if not self.segmentations:
+            return
+        # Generování tlačítek na základě aktuálního seznamu segmentací
+        for ann in self.segmentations:
             label = QLabel(f"{ann['label']} (oblastí: {len(ann['segmentation'])})")
             remove_btn = QPushButton('Smazat')
-            remove_btn.clicked.connect(lambda _, idx=i: self.remove_segmentation(idx))
+            remove_btn.clicked.connect(lambda _, seg_id=ann['id']: self.remove_segmentation_by_id(seg_id))
             row = QHBoxLayout()
             row.addWidget(label)
             row.addWidget(remove_btn)
@@ -525,10 +531,19 @@ class SuperpixelAnnotator(QMainWindow):
         self.seg_layout.addStretch(1)
 
     def remove_segmentation(self, idx):
+        # Tato metoda už nebude používaná pro mazání z UI, ale zachovám ji pro případné jiné použití
         if 0 <= idx < len(self.segmentations):
-            self.segmentations.pop(idx)
-            self.update_seg_panel()
-            self.update_label_buttons()
+            seg_id = self.segmentations[idx]['id']
+            self.remove_segmentation_by_id(seg_id)
+
+    def remove_segmentation_by_id(self, seg_id):
+        # Smaže segmentaci podle id z hlavního seznamu segmentací
+        self.segmentations = [s for s in self.segmentations if s['id'] != seg_id]
+        # --- Synchronizace s vizualizačním oknem ---
+        if hasattr(self, 'vis_window') and self.vis_window is not None:
+            self.vis_window.refresh_segmentations(self.seg_storage.get_all_segmentations())
+        self.update_seg_panel()
+        self.update_label_buttons()
 
     def mask_to_bbox(self, mask):
         ys, xs = np.where(mask)
@@ -545,10 +560,8 @@ class SuperpixelAnnotator(QMainWindow):
         self.display_image()
 
     def save_to_storage(self, coco_ann):
-        # Převede COCO anotaci na SegmentationEntry a uloží do storage
         if self.last_image_path is None:
             return
-        # Vytvořit masku z polygonů (pouze pro ukázku, v praxi by bylo lepší masku ukládat přímo)
         h, w = self.image.shape[:2]
         mask = np.zeros((h, w), dtype=np.uint8)
         from skimage.draw import polygon as skpolygon
@@ -559,6 +572,7 @@ class SuperpixelAnnotator(QMainWindow):
                 rr, cc = skpolygon(ys, xs, shape=mask.shape)
                 mask[rr, cc] = 1
         entry = SegmentationEntry(
+            id=coco_ann['id'],
             image_path=self.last_image_path,
             label=coco_ann['label'],
             mask=mask,
@@ -568,14 +582,27 @@ class SuperpixelAnnotator(QMainWindow):
         self.seg_storage.add_segmentation(entry)
 
     def open_visualization(self):
-        # Otevře okno vizualizace segmentací
         segs = self.seg_storage.get_all_segmentations()
         if not segs:
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.information(self, 'Vizualizace', 'Nejsou k dispozici žádné segmentace.')
             return
-        self.vis_window = VisualizationWindow(segs)
+        self.vis_window = VisualizationWindow(segs, on_delete_segmentation=self.on_delete_segmentation)
+        self.vis_window.destroyed.connect(self.on_vis_window_closed)
         self.vis_window.show()
+
+    def on_delete_segmentation(self, image_path, seg_id):
+        # Smaže segmentaci v hlavní storage i v JSON
+        self.seg_storage.remove_segmentation_by_id(image_path, seg_id)
+        self.remove_segmentation_by_id(seg_id)
+        # Kontrola, zda jsou objekty UI platné
+        if hasattr(self, 'seg_panel') and self.seg_panel is not None:
+            self.update_seg_panel()
+        if hasattr(self, 'label_buttons_widget') and self.label_buttons_widget is not None:
+            self.update_label_buttons()
+
+    def on_vis_window_closed(self):
+        self.vis_window = None
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
