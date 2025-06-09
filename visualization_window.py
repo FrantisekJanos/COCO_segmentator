@@ -92,22 +92,36 @@ class VisualizationWindow(QMainWindow):
             self.image_label.setText(f"Nelze načíst obrázek: {image_path}\n{e}")
 
     def update_overlay(self):
-        if self.current_np_image is not None and self.current_segmentations is not None:
-            try:
+        print("\n=== DEBUG: Začátek update_overlay ===")
+        try:
+            if self.current_np_image is not None and self.current_segmentations is not None:
+                print("Připravuji overlay...")
                 segs = [segmentation_entry_to_dict(e) for e in self.current_segmentations]
-                # Nastav barvy a outline tloušťku
+                print(f"Počet segmentací pro overlay: {len(segs)}")
+                
                 for i, s in enumerate(segs):
                     s['color'] = get_label_color(s['label'])
                     if i == self.selected_segmentation_idx:
-                        s['outline_width'] = 8  # vybraná segmentace
+                        s['outline_width'] = 8
                     else:
-                        s['outline_width'] = 4  # ostatní
+                        s['outline_width'] = 4
+                    
+                print("Vykresluji overlay...")
                 pixmap = draw_segmentation_overlay(self.current_np_image, segs)
                 self.image_label.setPixmap(pixmap.scaled(self.image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            except Exception as e:
-                print("Chyba při vykreslování overlay:")
-                traceback.print_exc()
-                self.image_label.setText(f"Chyba při vykreslování segmentací:\n{e}")
+                print("Overlay vykreslen")
+            else:
+                print("Není co vykreslovat - chybí obrázek nebo segmentace")
+            
+        except Exception as e:
+            print(f"\n!!! CHYBA v update_overlay !!!")
+            print(f"Typ chyby: {type(e).__name__}")
+            print(f"Chybová zpráva: {str(e)}")
+            print("Traceback:")
+            import traceback
+            traceback.print_exc()
+        
+        print("=== DEBUG: Konec update_overlay ===\n")
 
     def resizeEvent(self, event):
         self.update_overlay()
@@ -139,31 +153,54 @@ class VisualizationWindow(QMainWindow):
                 QMessageBox.critical(self, "Chyba", f"Nelze načíst obrázek: {fname}\n{e}")
 
     def update_seg_panel(self):
-        while self.seg_layout.count():
-            child = self.seg_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-        if not self.current_segmentations:
-            return
-        for idx, seg in enumerate(self.current_segmentations):
-            color = get_label_color(seg.label)
-            row = QHBoxLayout()
-            color_frame = QFrame()
-            color_frame.setFixedSize(18, 18)
-            color_frame.setStyleSheet(f"background: {color.name()}; border: 2px solid {color.name()}; border-radius: 4px;")
-            row.addWidget(color_frame)
-            label_btn = QPushButton(seg.label)
-            label_btn.setStyleSheet(self._label_btn_style(idx, color))
-            label_btn.clicked.connect(lambda _, i=idx: self.select_segmentation(i))
-            row.addWidget(label_btn)
-            remove_btn = QPushButton('Smazat')
-            remove_btn.setStyleSheet("padding: 2px 8px;")
-            remove_btn.clicked.connect(lambda _, i=idx: self.remove_segmentation(i))
-            row.addWidget(remove_btn)
-            row_widget = QWidget()
-            row_widget.setLayout(row)
-            self.seg_layout.addWidget(row_widget)
-        self.seg_layout.addStretch(1)
+        print("\n=== DEBUG: Začátek update_seg_panel ===")
+        try:
+            print("Mažu staré widgety...")
+            while self.seg_layout.count():
+                child = self.seg_layout.takeAt(0)
+                if child.widget():
+                    child.widget().deleteLater()
+            
+            if not self.current_segmentations:
+                print("Žádné segmentace k zobrazení")
+                return
+            
+            print(f"Vytvářím tlačítka pro {len(self.current_segmentations)} segmentací")
+            for idx, seg in enumerate(self.current_segmentations):
+                print(f"Vytvářím tlačítko pro segmentaci {idx}: {seg.label}")
+                color = get_label_color(seg.label)
+                row = QHBoxLayout()
+                
+                color_frame = QFrame()
+                color_frame.setFixedSize(18, 18)
+                color_frame.setStyleSheet(f"background: {color.name()}; border: 2px solid {color.name()}; border-radius: 4px;")
+                row.addWidget(color_frame)
+                
+                label_btn = QPushButton(seg.label)
+                label_btn.setStyleSheet(self._label_btn_style(idx, color))
+                label_btn.clicked.connect(lambda _, i=idx: self.select_segmentation(i))
+                row.addWidget(label_btn)
+                
+                remove_btn = QPushButton('Smazat')
+                remove_btn.setStyleSheet("padding: 2px 8px;")
+                remove_btn.clicked.connect(lambda _, i=idx: self.remove_segmentation(i))
+                row.addWidget(remove_btn)
+                
+                row_widget = QWidget()
+                row_widget.setLayout(row)
+                self.seg_layout.addWidget(row_widget)
+            
+            print("Přidávám stretch...")
+            self.seg_layout.addStretch(1)
+            print("=== DEBUG: Konec update_seg_panel ===\n")
+            
+        except Exception as e:
+            print(f"\n!!! CHYBA v update_seg_panel !!!")
+            print(f"Typ chyby: {type(e).__name__}")
+            print(f"Chybová zpráva: {str(e)}")
+            print("Traceback:")
+            import traceback
+            traceback.print_exc()
 
     def _label_btn_style(self, idx, color):
         if idx == self.selected_segmentation_idx:
@@ -178,17 +215,28 @@ class VisualizationWindow(QMainWindow):
 
     def remove_segmentation(self, idx):
         if self.current_image and 0 <= idx < len(self.current_segmentations):
-            seg = self.current_segmentations[idx]
-            seg_id = getattr(seg, 'id', None)
-            # Nejprve zavolám callback, který provede refresh segmentací v hlavním okně (a tím i zde)
-            if self.on_delete_segmentation and seg_id is not None:
-                self.on_delete_segmentation(self.current_image, seg_id)
-            # Po refreshi segmentací je potřeba aktualizovat indexy a UI
-            # (refresh_segmentations bude zavolána z hlavního okna)
-            # Nastavím selected_segmentation_idx na None, protože seznam se změnil
-            self.selected_segmentation_idx = None
-            self.update_seg_panel()
-            self.update_overlay()
+            try:
+                seg = self.current_segmentations[idx]
+                seg_id = getattr(seg, 'id', None)
+                
+                # Odstraníme segmentaci z lokálního seznamu
+                self.current_segmentations = self.current_segmentations[:idx] + self.current_segmentations[idx+1:]
+                self.selected_segmentation_idx = None
+                
+                # Aktualizujeme UI
+                self.update_seg_panel()
+                self.update_overlay()
+                
+                # Až po úspěšné aktualizaci UI zavoláme callback
+                if self.on_delete_segmentation and seg_id is not None:
+                    self.on_delete_segmentation(self.current_image, seg_id)
+                
+            except Exception as e:
+                print(f"Chyba při mazání segmentace: {e}")
+                if self.current_image in self.segmentations_by_image:
+                    self.current_segmentations = self.segmentations_by_image[self.current_image]
+                    self.update_seg_panel()
+                    self.update_overlay()
 
     def keyPressEvent(self, event):
         if self.current_segmentations and self.selected_segmentation_idx is not None:
@@ -213,56 +261,11 @@ class VisualizationWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def refresh_segmentations(self, segmentations_by_image):
+        # Aktualizujeme pouze data, UI necháme být
         self.segmentations_by_image = segmentations_by_image
         self.image_paths = list(segmentations_by_image.keys())
+        
         if self.current_image in self.image_paths:
-            idx = self.image_paths.index(self.current_image)
-            self.list_widget.clear()
-            for path in self.image_paths:
-                self.list_widget.addItem(path)
-            self.list_widget.setCurrentRow(idx)
             self.current_segmentations = self.segmentations_by_image[self.current_image]
             if self.current_segmentations is None:
                 self.current_segmentations = []
-            if self.selected_segmentation_idx is not None:
-                if self.selected_segmentation_idx >= len(self.current_segmentations):
-                    self.selected_segmentation_idx = None
-            self.update_seg_panel()
-            self.update_overlay()
-        else:
-            self.list_widget.clear()
-            for path in self.image_paths:
-                self.list_widget.addItem(path)
-            self.current_image = None
-            self.current_segmentations = []
-            self.selected_segmentation_idx = None
-            self.image_label.setText("Vyberte obrázek vlevo")
-            self.update_seg_panel()
-            self.update_overlay()
-
-    def update_seg_panel(self):
-        while self.seg_layout.count():
-            child = self.seg_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
-        if not self.current_segmentations:
-            return
-        for idx, seg in enumerate(self.current_segmentations):
-            color = get_label_color(seg.label)
-            row = QHBoxLayout()
-            color_frame = QFrame()
-            color_frame.setFixedSize(18, 18)
-            color_frame.setStyleSheet(f"background: {color.name()}; border: 2px solid {color.name()}; border-radius: 4px;")
-            row.addWidget(color_frame)
-            label_btn = QPushButton(seg.label)
-            label_btn.setStyleSheet(self._label_btn_style(idx, color))
-            label_btn.clicked.connect(lambda _, i=idx: self.select_segmentation(i))
-            row.addWidget(label_btn)
-            remove_btn = QPushButton('Smazat')
-            remove_btn.setStyleSheet("padding: 2px 8px;")
-            remove_btn.clicked.connect(lambda _, i=idx: self.remove_segmentation(i))
-            row.addWidget(remove_btn)
-            row_widget = QWidget()
-            row_widget.setLayout(row)
-            self.seg_layout.addWidget(row_widget)
-        self.seg_layout.addStretch(1)
