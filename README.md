@@ -1,4 +1,4 @@
-# Superpixel Segmentation Fakin-Annotator (PyQt5)
+# Superpixel Segmentation Annotator (PyQt5)
 
 This is a fast, user-friendly desktop tool for creating segmentation annotations for machine learning in the COCO JSON format. The app is designed for efficient manual and semi-automatic annotation of objects in images using superpixel segmentation and interactive editing.
 

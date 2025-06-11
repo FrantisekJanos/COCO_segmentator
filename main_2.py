@@ -15,7 +15,7 @@ from visualization_window import VisualizationWindow
 class SuperpixelAnnotator(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle('Superpixel Segmentační fakin-annotátor (PyQt5)')
+        self.setWindowTitle('Superpixel Segmentační annotátor (PyQt5)')
         self.setGeometry(100, 100, 1200, 800)
         self.image = None
         self.superpixel_edges = None
